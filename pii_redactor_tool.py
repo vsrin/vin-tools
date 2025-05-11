@@ -3,7 +3,6 @@
 import os
 import re
 from typing import Dict, Any, List, Optional
-#from tool_py_base_class import BaseTool
 from Blueprint.Templates.Tools.python_base_tool import BaseTool
 
 class PIIRedactorTool(BaseTool):
