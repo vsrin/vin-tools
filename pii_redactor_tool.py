@@ -14,14 +14,14 @@ class PIIRedactorTool(BaseTool):
     # Studio-required metadata (all at class level)
     name = "PIIRedactorTool"
     description = "Redacts personally identifiable information from text for insurance submissions and compliance"
-    requires_env_vars = []  # No env vars needed for this tool
-    dependencies = []  # Only uses standard Python libraries
-    uses_llm = False  # This tool doesn't require LLM
+    requires_env_vars = []
+    dependencies = []
+    uses_llm = False
     default_llm_model = None
     default_system_instructions = None
-    structured_output = True  # Returns structured JSON response
+    structured_output = True
     
-    # Schema definitions (at class level for studio)
+    # Schema definitions
     input_schema = {
         "type": "object",
         "properties": {
@@ -85,38 +85,19 @@ class PIIRedactorTool(BaseTool):
     }
     
     # Studio configuration
-    config = {}  # No special config needed
-    direct_to_user = False  # Results go back to the agent
-    respond_back_to_agent = True  # Agent processes the results
-    response_type = "json"  # Return JSON data
-    call_back_url = None  # No callback needed
-    database_config_uri = None  # No database access needed
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """Initialize the tool with optional configuration"""
-        super().__init__(config)
+    config = {}
+    direct_to_user = False
+    respond_back_to_agent = True
+    response_type = "json"
+    call_back_url = None
+    database_config_uri = None
     
     def run_sync(self, input_data: Dict[str, Any], llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Redacts PII from the provided text based on specified redaction types.
-        
-        Args:
-            input_data: Dictionary containing:
-                - text: String to redact PII from
-                - redaction_types: List of PII types to redact (optional)
-                - redaction_char: Character to use for redaction (optional)
-                - preserve_format: Whether to preserve formatting (optional)
-            llm_config: Not used for this tool
-            
-        Returns:
-            Dictionary containing:
-                - redacted_text: Text with PII redacted
-                - redacted_items: Details of what was redacted
-                - summary: Count of redacted items by type
-                - error: Error message if any (optional)
         """
         try:
-            # Extract input parameters with defaults
+            # Extract input parameters
             text = input_data.get("text", "")
             redaction_types = input_data.get("redaction_types", [
                 "ssn", "email", "phone", "address", "name", "dob", "credit_card"
@@ -132,7 +113,7 @@ class PIIRedactorTool(BaseTool):
                     "error": "No text provided for redaction"
                 }
             
-            # Initialize tracking variables
+            # Initialize tracking
             redacted_text = text
             redacted_items = {}
             summary = {}
@@ -148,7 +129,8 @@ class PIIRedactorTool(BaseTool):
                     "replacement": lambda m: f"{redaction_char*5}@{redaction_char*6}.com" if preserve_format else redaction_char * len(m.group(0))
                 },
                 "phone": {
-                    "pattern": r'\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b',
+                    # Fixed pattern - matches complete phone numbers with or without parentheses
+                    "pattern": r'\b(?:\+?1[-.\s]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})\b',
                     "replacement": lambda m: f"({redaction_char*3}) {redaction_char*3}-{redaction_char*4}" if preserve_format else redaction_char * len(m.group(0))
                 },
                 "credit_card": {
@@ -176,24 +158,23 @@ class PIIRedactorTool(BaseTool):
                     matches = list(re.finditer(pattern_info["pattern"], redacted_text, re.IGNORECASE))
                     
                     if matches:
-                        # Initialize tracking for this PII type
                         redacted_items[pii_type] = []
                         summary[pii_type] = len(matches)
                         
-                        # Process matches from end to start to maintain positions
+                        # Process matches from end to start
                         for match in reversed(matches):
                             start, end = match.span()
                             original_text = match.group(0)
                             replacement = pattern_info["replacement"](match)
                             
-                            # Record the redaction
+                            # Record redaction
                             redacted_items[pii_type].append({
                                 "original": original_text,
                                 "position": f"{start}-{end}",
                                 "redacted_to": replacement
                             })
                             
-                            # Perform the redaction
+                            # Perform redaction
                             redacted_text = redacted_text[:start] + replacement + redacted_text[end:]
             
             return {
@@ -211,44 +192,26 @@ class PIIRedactorTool(BaseTool):
             }
 
 
-# Tool metadata for studio inspection
-# This section helps the studio automatically discover tool properties
+# Tool metadata for studio
 if __name__ == "__main__":
-    # Tool introspection - studio can use this
-    tool_metadata = {
-        "class_name": "PIIRedactorTool",
-        "name": PIIRedactorTool.name,
-        "description": PIIRedactorTool.description,
-        "version": "1.0",
-        "requires_env_vars": PIIRedactorTool.requires_env_vars,
-        "dependencies": PIIRedactorTool.dependencies,
-        "uses_llm": PIIRedactorTool.uses_llm,
-        "input_schema": PIIRedactorTool.input_schema,
-        "output_schema": PIIRedactorTool.output_schema,
-        "response_type": PIIRedactorTool.response_type,
-        "direct_to_user": PIIRedactorTool.direct_to_user,
-        "respond_back_to_agent": PIIRedactorTool.respond_back_to_agent
-    }
-    
-    # Test the tool if run directly
-    print("Tool Metadata:")
-    import json
-    print(json.dumps(tool_metadata, indent=2))
-    
-    print("\nRunning test...")
+    print("Testing Final PII Redactor Tool...")
     tool = PIIRedactorTool()
     
-    test_text = """
-    Test Application:
-    SSN: 123-45-6789
-    Email: test@email.com
-    Phone: (555) 123-4567
-    """
+    # Test the fixed phone pattern
+    test_cases = [
+        "Phone: (555) 123-4567",  # Standard format
+        "Call 555-123-4567",      # Without parentheses
+        "Mobile: 555.123.4567",   # With dots
+        "Contact: 5551234567"     # No separators
+    ]
     
-    result = tool.run_sync({
-        "text": test_text,
-        "redaction_types": ["ssn", "email", "phone"]
-    })
-    
-    print("Test Result:")
-    print(json.dumps(result, indent=2))
+    for test_text in test_cases:
+        result = tool.run_sync({
+            "text": test_text,
+            "redaction_types": ["phone"]
+        })
+        print(f"\nOriginal: {test_text}")
+        print(f"Redacted: {result['redacted_text']}")
+        if "phone" in result["redacted_items"]:
+            for item in result["redacted_items"]["phone"]:
+                print(f"Captured: '{item['original']}'")
