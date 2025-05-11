@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from tool_py_base_class import BaseTool
 
 class PIIRedactorTool(BaseTool):
@@ -11,20 +11,18 @@ class PIIRedactorTool(BaseTool):
     Useful for insurance submissions and sensitive document processing.
     """
     
-    # Tool metadata
-    name: str = "PIIRedactorTool"
-    description: str = "Redacts personally identifiable information from text for insurance submissions"
-    version: str = "1.0"
+    # Studio-required metadata (all at class level)
+    name = "PIIRedactorTool"
+    description = "Redacts personally identifiable information from text for insurance submissions and compliance"
+    requires_env_vars = []  # No env vars needed for this tool
+    dependencies = []  # Only uses standard Python libraries
+    uses_llm = False  # This tool doesn't require LLM
+    default_llm_model = None
+    default_system_instructions = None
+    structured_output = True  # Returns structured JSON response
     
-    # Environment and dependencies
-    requires_env_vars: List[str] = []
-    dependencies: List[tuple] = []
-    
-    # LLM settings
-    uses_llm: bool = False
-    
-    # Schema definitions
-    input_schema: Dict[str, Any] = {
+    # Schema definitions (at class level for studio)
+    input_schema = {
         "type": "object",
         "properties": {
             "text": {
@@ -51,7 +49,7 @@ class PIIRedactorTool(BaseTool):
         "required": ["text"]
     }
     
-    output_schema: Dict[str, Any] = {
+    output_schema = {
         "type": "object",
         "properties": {
             "redacted_text": {
@@ -77,16 +75,28 @@ class PIIRedactorTool(BaseTool):
                 "type": "object",
                 "description": "Count of redacted items by type",
                 "additionalProperties": {"type": "integer"}
+            },
+            "error": {
+                "type": "string",
+                "description": "Error message if any"
             }
-        }
+        },
+        "required": ["redacted_text", "redacted_items", "summary"]
     }
     
-    # Response configuration
-    direct_to_user: bool = False
-    respond_back_to_agent: bool = True
-    response_type: str = "json"
+    # Studio configuration
+    config = {}  # No special config needed
+    direct_to_user = False  # Results go back to the agent
+    respond_back_to_agent = True  # Agent processes the results
+    response_type = "json"  # Return JSON data
+    call_back_url = None  # No callback needed
+    database_config_uri = None  # No database access needed
     
-    def run_sync(self, input_data: Dict[str, Any], llm_config: Dict[str, Any] = None) -> Dict[str, Any]:
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize the tool with optional configuration"""
+        super().__init__(config)
+    
+    def run_sync(self, input_data: Dict[str, Any], llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Redacts PII from the provided text based on specified redaction types.
         
@@ -103,9 +113,10 @@ class PIIRedactorTool(BaseTool):
                 - redacted_text: Text with PII redacted
                 - redacted_items: Details of what was redacted
                 - summary: Count of redacted items by type
+                - error: Error message if any (optional)
         """
         try:
-            # Extract input parameters
+            # Extract input parameters with defaults
             text = input_data.get("text", "")
             redaction_types = input_data.get("redaction_types", [
                 "ssn", "email", "phone", "address", "name", "dob", "credit_card"
@@ -199,26 +210,45 @@ class PIIRedactorTool(BaseTool):
                 "error": f"Error during PII redaction: {str(e)}"
             }
 
-# Example usage (for testing outside the studio)
+
+# Tool metadata for studio inspection
+# This section helps the studio automatically discover tool properties
 if __name__ == "__main__":
-    # Create an instance of the tool
-    pii_tool = PIIRedactorTool()
+    # Tool introspection - studio can use this
+    tool_metadata = {
+        "class_name": "PIIRedactorTool",
+        "name": PIIRedactorTool.name,
+        "description": PIIRedactorTool.description,
+        "version": "1.0",
+        "requires_env_vars": PIIRedactorTool.requires_env_vars,
+        "dependencies": PIIRedactorTool.dependencies,
+        "uses_llm": PIIRedactorTool.uses_llm,
+        "input_schema": PIIRedactorTool.input_schema,
+        "output_schema": PIIRedactorTool.output_schema,
+        "response_type": PIIRedactorTool.response_type,
+        "direct_to_user": PIIRedactorTool.direct_to_user,
+        "respond_back_to_agent": PIIRedactorTool.respond_back_to_agent
+    }
     
-    # Test the tool
+    # Test the tool if run directly
+    print("Tool Metadata:")
+    import json
+    print(json.dumps(tool_metadata, indent=2))
+    
+    print("\nRunning test...")
+    tool = PIIRedactorTool()
+    
     test_text = """
-    John Doe's SSN is 123-45-6789 and his email is john.doe@example.com. 
-    Call him at (555) 123-4567. He lives at 123 Main Street.
-    His date of birth is 01/15/1980 and his credit card is 4111 1111 1111 1111.
+    Test Application:
+    SSN: 123-45-6789
+    Email: test@email.com
+    Phone: (555) 123-4567
     """
     
-    result = pii_tool.run_sync({
+    result = tool.run_sync({
         "text": test_text,
-        "redaction_types": ["ssn", "email", "phone", "address", "dob", "credit_card"],
-        "preserve_format": True
+        "redaction_types": ["ssn", "email", "phone"]
     })
     
-    print("Redacted Text:")
-    print(result["redacted_text"])
-    print("\nSummary:")
-    for pii_type, count in result["summary"].items():
-        print(f"- {pii_type}: {count} items redacted")
+    print("Test Result:")
+    print(json.dumps(result, indent=2))
