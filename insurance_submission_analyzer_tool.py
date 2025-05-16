@@ -72,8 +72,9 @@ To adapt this tool for future attribute changes, focus on these key sections:
 import json
 from typing import Dict, List, Any, Optional, Tuple
 
-#from tool_py_base_class import BaseTool
 from Blueprint.Templates.Tools.python_base_tool import BaseTool
+#from tool_py_base_class import BaseTool
+
 
 class InsuranceSubmissionAnalyzerTool(BaseTool):
     """
@@ -135,11 +136,18 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
         "required": ["submission_data"]
     }
     
+    # Simplified output schema with a consistent pattern similar to NAICSExcelTool
     output_schema = {
         "type": "object",
         "properties": {
-            "submission_quality_analysis": {
+            "status": {
+                "type": "string",
+                "enum": ["success", "error"],
+                "description": "Status of the analysis operation"
+            },
+            "data": {
                 "type": "object",
+                "description": "Analysis results when status is success",
                 "properties": {
                     "overall_completeness": {
                         "type": "object",
@@ -171,12 +179,12 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                     }
                 }
             },
-            "error": {
+            "message": {
                 "type": "string",
-                "description": "Error message if any occurred during analysis"
+                "description": "Error message when status is error"
             }
         },
-        "required": ["submission_quality_analysis"]
+        "required": ["status"]
     }
     
     config = {}
@@ -196,51 +204,19 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
             
         Returns:
             Dictionary with analysis results containing completeness metrics, 
-            quality assessments, and recommendations
+            quality assessments, and recommendations, using a standard pattern of
+            {"status": "success|error", "data": {...}, "message": "..."} 
         """
         try:
-            # Initialize default analyzer to get element counts for empty responses
-            default_analyzer = InsuranceSubmissionAnalyzer()
-            
             # Extract submission data and config
             submission_data = input_data.get("submission_data")
             user_config = input_data.get("config", {})
             
             if not submission_data:
                 return {
-                    "submission_quality_analysis": {
-                        "overall_completeness": {
-                            "aggregate": {
-                                "percentage": 0.0, 
-                                "present": 0, 
-                                "total": (len(default_analyzer.triage_elements) + 
-                                         len(default_analyzer.appetite_elements) + 
-                                         len(default_analyzer.clearance_elements))
-                            },
-                            "triage": {"percentage": 0.0, "present": 0, "total": len(default_analyzer.triage_elements)},
-                            "appetite": {"percentage": 0.0, "present": 0, "total": len(default_analyzer.appetite_elements)},
-                            "clearance": {"percentage": 0.0, "present": 0, "total": len(default_analyzer.clearance_elements)}
-                        },
-                        "data_quality_tier": {
-                            "tier": "Needs Improvement",
-                            "average_score": 0.0
-                        },
-                        "field_level_accuracy": {},
-                        "missing_required_elements": {
-                            "appetite": default_analyzer.appetite_elements,
-                            "triage": default_analyzer.triage_elements,
-                            "clearance": default_analyzer.clearance_elements
-                        },
-                        "calculation_methodology": {
-                            "overall_completeness": "Calculated as (total present fields / total required fields) * 100",
-                            "category_completeness": "Calculated as (present fields in category / total fields in category) * 100 for each category",
-                            "average_accuracy": "Average of all available field accuracy scores",
-                            "quality_tier": f"Based on average accuracy (>={default_analyzer.high_quality_threshold}% for High Quality, >={default_analyzer.good_quality_threshold}% for Good Quality) and overall completeness (>=90% for High Quality, >=70% for Good Quality)"
-                        },
-                        "risk_assessment_readiness": "Significant data gaps prevent adequate risk assessment. Submission requires substantial enrichment.",
-                        "next_steps": ["No data to analyze. Please provide valid submission data."]
-                    },
-                    "error": "No submission data provided for analysis"
+                    "status": "error",
+                    "message": "No submission data provided for analysis",
+                    "data": None
                 }
             
             # Initialize the analyzer with user config
@@ -249,54 +225,19 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
             # Analyze the submission
             analysis_results = analyzer.analyze_submission(submission_data)
             
-            return analysis_results
+            # Return in the standardized format
+            return {
+                "status": "success",
+                "data": analysis_results,
+                "message": None
+            }
             
         except Exception as e:
-            # Initialize default analyzer to get element counts for error responses
-            try:
-                default_analyzer = InsuranceSubmissionAnalyzer()
-                triage_elements = default_analyzer.triage_elements
-                appetite_elements = default_analyzer.appetite_elements
-                clearance_elements = default_analyzer.clearance_elements
-                total_elements = len(triage_elements) + len(appetite_elements) + len(clearance_elements)
-            except:
-                triage_elements = []
-                appetite_elements = []
-                clearance_elements = []
-                total_elements = 0
-                
+            # Return a simplified error format that's consistent with NAICSExcelTool
             return {
-                "submission_quality_analysis": {
-                    "overall_completeness": {
-                        "aggregate": {
-                            "percentage": 0.0, 
-                            "present": 0, 
-                            "total": total_elements
-                        },
-                        "triage": {"percentage": 0.0, "present": 0, "total": len(triage_elements)},
-                        "appetite": {"percentage": 0.0, "present": 0, "total": len(appetite_elements)},
-                        "clearance": {"percentage": 0.0, "present": 0, "total": len(clearance_elements)}
-                    },
-                    "data_quality_tier": {
-                        "tier": "Error",
-                        "average_score": 0.0
-                    },
-                    "field_level_accuracy": {},
-                    "missing_required_elements": {
-                        "appetite": appetite_elements,
-                        "triage": triage_elements,
-                        "clearance": clearance_elements
-                    },
-                    "calculation_methodology": {
-                        "overall_completeness": "Calculated as (total present fields / total required fields) * 100",
-                        "category_completeness": "Calculated as (present fields in category / total fields in category) * 100 for each category",
-                        "average_accuracy": "Average of all available field accuracy scores",
-                        "quality_tier": "Based on average accuracy and overall completeness"
-                    },
-                    "risk_assessment_readiness": "An error occurred during analysis.",
-                    "next_steps": ["Fix error and retry analysis."]
-                },
-                "error": f"Error during submission analysis: {str(e)}"
+                "status": "error",
+                "message": f"Error during submission analysis: {str(e)}",
+                "data": None
             }
 
 
@@ -627,48 +568,50 @@ class InsuranceSubmissionAnalyzer:
             "quality_tier": f"Based on average accuracy (>={self.high_quality_threshold}% for High Quality, >={self.good_quality_threshold}% for Good Quality) and overall completeness (>=90% for High Quality, >=70% for Good Quality)"
         }
         
-        # Prepare the result for the AI agent
-        result = {
-            "submission_quality_analysis": {
-                "overall_completeness": {
-                    "aggregate": {
-                        "percentage": round(overall_percent, 2),
-                        "present": total_present,
-                        "total": total_required
-                    },
-                    "triage": {
-                        "percentage": round(triage_percent, 2),
-                        "present": len(triage_present),
-                        "total": len(self.triage_elements)
-                    },
-                    "appetite": {
-                        "percentage": round(appetite_percent, 2),
-                        "present": len(appetite_present),
-                        "total": len(self.appetite_elements)
-                    },
-                    "clearance": {
-                        "percentage": round(clearance_percent, 2),
-                        "present": len(clearance_present),
-                        "total": len(self.clearance_elements)
-                    }
-                },
-                "data_quality_tier": {
-                    "tier": quality_tier,
-                    "average_score": round(avg_accuracy, 2)
-                },
-                "field_level_accuracy": field_level_accuracy,
-                "missing_required_elements": {
-                    "appetite": appetite_missing,
-                    "triage": triage_missing,
-                    "clearance": clearance_missing
-                },
-                "calculation_methodology": calculation_methodology,
-                "risk_assessment_readiness": self._get_risk_assessment_readiness(overall_percent, avg_accuracy),
-                "next_steps": self._get_next_steps(triage_missing, appetite_missing, clearance_missing)
-            }
-        }
+        # Generate risk assessment readiness
+        risk_assessment = self._get_risk_assessment_readiness(overall_percent, avg_accuracy)
         
-        return result
+        # Generate next steps
+        next_steps = self._get_next_steps(triage_missing, appetite_missing, clearance_missing)
+        
+        # Prepare the result with the format matching the expected schema
+        return {
+            "overall_completeness": {
+                "aggregate": {
+                    "percentage": round(overall_percent, 2),
+                    "present": total_present,
+                    "total": total_required
+                },
+                "triage": {
+                    "percentage": round(triage_percent, 2),
+                    "present": len(triage_present),
+                    "total": len(self.triage_elements)
+                },
+                "appetite": {
+                    "percentage": round(appetite_percent, 2),
+                    "present": len(appetite_present),
+                    "total": len(self.appetite_elements)
+                },
+                "clearance": {
+                    "percentage": round(clearance_percent, 2),
+                    "present": len(clearance_present),
+                    "total": len(self.clearance_elements)
+                }
+            },
+            "data_quality_tier": {
+                "tier": quality_tier,
+                "average_score": round(avg_accuracy, 2)
+            },
+            "field_level_accuracy": field_level_accuracy,
+            "missing_required_elements": {
+                "appetite": appetite_missing,
+                "triage": triage_missing,
+                "clearance": clearance_missing
+            },
+            "calculation_methodology": calculation_methodology,
+            "risk_assessment_readiness": risk_assessment,
+            "next_steps": next_steps
+        }
     
     def _get_risk_assessment_readiness(self, overall_percent, avg_accuracy):
         """
