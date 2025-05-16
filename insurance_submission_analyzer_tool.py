@@ -71,10 +71,8 @@ To adapt this tool for future attribute changes, focus on these key sections:
 
 import json
 from typing import Dict, List, Any, Optional, Tuple
-
-from Blueprint.Templates.Tools.python_base_tool import BaseTool
 #from tool_py_base_class import BaseTool
-
+from Blueprint.Templates.Tools.python_base_tool import BaseTool
 
 class InsuranceSubmissionAnalyzerTool(BaseTool):
     """
@@ -208,6 +206,9 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
             {"status": "success|error", "data": {...}, "message": "..."} 
         """
         try:
+            # Print the input data received
+            print(f"INPUT DATA RECEIVED: {json.dumps(input_data, indent=2)}")
+            
             # Extract submission data and config
             submission_data = input_data.get("submission_data")
             user_config = input_data.get("config", {})
