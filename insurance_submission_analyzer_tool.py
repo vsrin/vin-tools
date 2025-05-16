@@ -143,7 +143,7 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                 "properties": {
                     "overall_completeness": {
                         "type": "object",
-                        "description": "Completeness percentages for each category"
+                        "description": "Completeness percentages for each category and aggregate"
                     },
                     "data_quality_tier": {
                         "type": "object",
@@ -151,15 +151,15 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                     },
                     "field_level_accuracy": {
                         "type": "object",
-                        "description": "Accuracy scores for individual fields"
+                        "description": "Accuracy scores and values for individual fields"
                     },
                     "missing_required_elements": {
                         "type": "object",
                         "description": "List of missing elements by category"
                     },
-                    "extracted_data": {
+                    "calculation_methodology": {
                         "type": "object",
-                        "description": "All extracted field values and scores"
+                        "description": "Explanation of how scores are calculated"
                     },
                     "risk_assessment_readiness": {
                         "type": "string",
@@ -210,6 +210,13 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                 return {
                     "submission_quality_analysis": {
                         "overall_completeness": {
+                            "aggregate": {
+                                "percentage": 0.0, 
+                                "present": 0, 
+                                "total": (len(default_analyzer.triage_elements) + 
+                                         len(default_analyzer.appetite_elements) + 
+                                         len(default_analyzer.clearance_elements))
+                            },
                             "triage": {"percentage": 0.0, "present": 0, "total": len(default_analyzer.triage_elements)},
                             "appetite": {"percentage": 0.0, "present": 0, "total": len(default_analyzer.appetite_elements)},
                             "clearance": {"percentage": 0.0, "present": 0, "total": len(default_analyzer.clearance_elements)}
@@ -224,7 +231,12 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                             "triage": default_analyzer.triage_elements,
                             "clearance": default_analyzer.clearance_elements
                         },
-                        "extracted_data": {},
+                        "calculation_methodology": {
+                            "overall_completeness": "Calculated as (total present fields / total required fields) * 100",
+                            "category_completeness": "Calculated as (present fields in category / total fields in category) * 100 for each category",
+                            "average_accuracy": "Average of all available field accuracy scores",
+                            "quality_tier": f"Based on average accuracy (>={default_analyzer.high_quality_threshold}% for High Quality, >={default_analyzer.good_quality_threshold}% for Good Quality) and overall completeness (>=90% for High Quality, >=70% for Good Quality)"
+                        },
                         "risk_assessment_readiness": "Significant data gaps prevent adequate risk assessment. Submission requires substantial enrichment.",
                         "next_steps": ["No data to analyze. Please provide valid submission data."]
                     },
@@ -246,14 +258,21 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                 triage_elements = default_analyzer.triage_elements
                 appetite_elements = default_analyzer.appetite_elements
                 clearance_elements = default_analyzer.clearance_elements
+                total_elements = len(triage_elements) + len(appetite_elements) + len(clearance_elements)
             except:
                 triage_elements = []
                 appetite_elements = []
                 clearance_elements = []
+                total_elements = 0
                 
             return {
                 "submission_quality_analysis": {
                     "overall_completeness": {
+                        "aggregate": {
+                            "percentage": 0.0, 
+                            "present": 0, 
+                            "total": total_elements
+                        },
                         "triage": {"percentage": 0.0, "present": 0, "total": len(triage_elements)},
                         "appetite": {"percentage": 0.0, "present": 0, "total": len(appetite_elements)},
                         "clearance": {"percentage": 0.0, "present": 0, "total": len(clearance_elements)}
@@ -268,7 +287,12 @@ class InsuranceSubmissionAnalyzerTool(BaseTool):
                         "triage": triage_elements,
                         "clearance": clearance_elements
                     },
-                    "extracted_data": {},
+                    "calculation_methodology": {
+                        "overall_completeness": "Calculated as (total present fields / total required fields) * 100",
+                        "category_completeness": "Calculated as (present fields in category / total fields in category) * 100 for each category",
+                        "average_accuracy": "Average of all available field accuracy scores",
+                        "quality_tier": "Based on average accuracy and overall completeness"
+                    },
                     "risk_assessment_readiness": "An error occurred during analysis.",
                     "next_steps": ["Fix error and retry analysis."]
                 },
@@ -560,38 +584,59 @@ class InsuranceSubmissionAnalyzer:
         appetite_percent = (len(appetite_present) / len(self.appetite_elements)) * 100 if self.appetite_elements else 100
         clearance_percent = (len(clearance_present) / len(self.clearance_elements)) * 100 if self.clearance_elements else 100
         
+        # Calculate overall completeness (total present / total required)
+        total_present = len(triage_present) + len(appetite_present) + len(clearance_present)
+        total_required = len(self.triage_elements) + len(self.appetite_elements) + len(self.clearance_elements)
+        overall_percent = (total_present / total_required) * 100 if total_required else 100
+        
         # Get missing elements
         triage_missing = [e for e in self.triage_elements if e not in triage_present]
         appetite_missing = [e for e in self.appetite_elements if e not in appetite_present]
         clearance_missing = [e for e in self.clearance_elements if e not in clearance_present]
         
-        # Get field-level accuracy
-        accuracy_scores = {}
+        # Get field-level accuracy with values included
+        field_level_accuracy = {}
         for element in set(self.triage_elements + self.appetite_elements + self.clearance_elements):
             if self.is_element_present(submission_data, element):
-                score = self.get_accuracy_score(submission_data, element)
+                value = extracted_data[element]["value"]
+                score = extracted_data[element]["score"]
+                indicator = extracted_data[element]["quality_indicator"]
+                
                 if score is not None:
-                    accuracy_scores[element] = {
+                    field_level_accuracy[element] = {
+                        "value": value,
                         "score": score,
-                        "indicator": self.get_quality_indicator(score)
+                        "indicator": indicator
                     }
         
         # Calculate average accuracy
-        avg_accuracy = sum(item["score"] for item in accuracy_scores.values()) / len(accuracy_scores) if accuracy_scores else 0
+        avg_accuracy = sum(item["score"] for item in field_level_accuracy.values()) / len(field_level_accuracy) if field_level_accuracy else 0
         
         # Determine overall quality tier
-        overall_completeness = (triage_percent + appetite_percent + clearance_percent) / 3
-        if avg_accuracy >= self.high_quality_threshold and overall_completeness >= 90:
+        if avg_accuracy >= self.high_quality_threshold and overall_percent >= 90:
             quality_tier = "High Quality"
-        elif avg_accuracy >= self.good_quality_threshold and overall_completeness >= 70:
+        elif avg_accuracy >= self.good_quality_threshold and overall_percent >= 70:
             quality_tier = "Good Quality"
         else:
             quality_tier = "Needs Improvement"
+        
+        # Prepare the calculation methodology
+        calculation_methodology = {
+            "overall_completeness": "Calculated as (total present fields / total required fields) * 100",
+            "category_completeness": "Calculated as (present fields in category / total fields in category) * 100 for each category",
+            "average_accuracy": "Average of all available field accuracy scores",
+            "quality_tier": f"Based on average accuracy (>={self.high_quality_threshold}% for High Quality, >={self.good_quality_threshold}% for Good Quality) and overall completeness (>=90% for High Quality, >=70% for Good Quality)"
+        }
         
         # Prepare the result for the AI agent
         result = {
             "submission_quality_analysis": {
                 "overall_completeness": {
+                    "aggregate": {
+                        "percentage": round(overall_percent, 2),
+                        "present": total_present,
+                        "total": total_required
+                    },
                     "triage": {
                         "percentage": round(triage_percent, 2),
                         "present": len(triage_present),
@@ -612,44 +657,36 @@ class InsuranceSubmissionAnalyzer:
                     "tier": quality_tier,
                     "average_score": round(avg_accuracy, 2)
                 },
-                "field_level_accuracy": {
-                    element: {
-                        "score": round(details["score"], 2),
-                        "indicator": details["indicator"]
-                    } for element, details in accuracy_scores.items()
-                },
+                "field_level_accuracy": field_level_accuracy,
                 "missing_required_elements": {
                     "appetite": appetite_missing,
                     "triage": triage_missing,
                     "clearance": clearance_missing
                 },
-                "extracted_data": extracted_data,
-                "risk_assessment_readiness": self._get_risk_assessment_readiness(triage_percent, appetite_percent, clearance_percent),
+                "calculation_methodology": calculation_methodology,
+                "risk_assessment_readiness": self._get_risk_assessment_readiness(overall_percent, avg_accuracy),
                 "next_steps": self._get_next_steps(triage_missing, appetite_missing, clearance_missing)
             }
         }
         
         return result
     
-    def _get_risk_assessment_readiness(self, triage_percent, appetite_percent, clearance_percent):
+    def _get_risk_assessment_readiness(self, overall_percent, avg_accuracy):
         """
-        Generate a risk assessment readiness statement based on completeness.
+        Generate a risk assessment readiness statement based on completeness and accuracy.
         
         Args:
-            triage_percent: Triage completeness percentage
-            appetite_percent: Appetite completeness percentage
-            clearance_percent: Clearance completeness percentage
+            overall_percent: Overall completeness percentage
+            avg_accuracy: Average accuracy score
             
         Returns:
             A risk assessment readiness statement
         """
-        avg_completeness = (triage_percent + appetite_percent + clearance_percent) / 3
-        
-        if avg_completeness >= 90:
+        if overall_percent >= 90 and avg_accuracy >= self.high_quality_threshold:
             return "Submission is ready for underwriting with comprehensive data available."
-        elif avg_completeness >= 80:
+        elif overall_percent >= 80 and avg_accuracy >= self.good_quality_threshold:
             return "Submission is suitable for preliminary assessment, but some data enrichment is recommended."
-        elif avg_completeness >= 70:
+        elif overall_percent >= 70:
             return "Submission requires additional information before complete risk assessment can be performed."
         else:
             return "Significant data gaps prevent adequate risk assessment. Submission requires substantial enrichment."
