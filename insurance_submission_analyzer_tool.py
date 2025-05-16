@@ -339,8 +339,7 @@ class InsuranceSubmissionAnalyzer:
         
         self.clearance_elements = [
             "company_name", "address", "primary_naics_code", "primary_naics_description", 
-            "primary_sic_code", "policy_inception_date", "document_date", 
-            "broker_contact_points", "coverages", "broker_name", "broker_address", 
+            "primary_sic_code", "policy_inception_date", "document_date", "broker_name", "broker_address", 
             "broker_city", "broker_post_code", "broker_state", "broker_email", 
             "submission_received_date", "target_premium"
         ]
