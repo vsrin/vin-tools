@@ -33,34 +33,13 @@ class PropertyValuationTool(BaseTool):
     default_system_instructions = None
     structured_output = True
     
-    # Schema definitions
+    # Schema definitions - simplified to only require transaction_id
     input_schema = {
         "type": "object",
         "properties": {
             "transaction_id": {
                 "type": "string",
                 "description": "The unique transaction ID (artifi_id) to retrieve submission data from MongoDB"
-            },
-            "analysis_type": {
-                "type": "string",
-                "description": "Type of analysis to perform",
-                "enum": ["basic", "detailed", "anomaly", "all"],
-                "default": "all"
-            },
-            "include_recommendations": {
-                "type": "boolean",
-                "description": "Whether to include recommendations in the output",
-                "default": True
-            },
-            "include_citations": {
-                "type": "boolean",
-                "description": "Whether to include industry reference citations",
-                "default": True
-            },
-            "zip_code_database": {
-                "type": "object",
-                "description": "Optional zip code mapping for enhanced regional analysis",
-                "default": {}
             }
         },
         "required": ["transaction_id"]
@@ -150,6 +129,11 @@ class PropertyValuationTool(BaseTool):
     response_type = "json"
     call_back_url = None
     database_config_uri = "mongodb+srv://artifi:root@artifi.2vi2m.mongodb.net/?retryWrites=true&w=majority&appName=Artifi"
+    
+    # Default settings (previously were optional parameters)
+    _default_analysis_type = "all"
+    _default_include_recommendations = True
+    _default_include_citations = True
     
     # Construction cost base rates by building class ($/sqft)
     _construction_costs = {
@@ -363,12 +347,8 @@ class PropertyValuationTool(BaseTool):
         Analyze Statement of Values data to validate property valuations.
         
         Args:
-            input_data: Dictionary containing:
+            input_data: Dictionary containing only:
                 - transaction_id: Unique transaction ID to retrieve data from MongoDB
-                - analysis_type: Type of analysis to perform
-                - include_recommendations: Whether to include recommendations
-                - include_citations: Whether to include industry reference citations
-                - zip_code_database: Optional zip code mapping for regional analysis
             llm_config: Not used for this tool
             
         Returns:
@@ -377,17 +357,18 @@ class PropertyValuationTool(BaseTool):
                 - property_valuations: Analysis of each property
                 - anomalies: Properties with unusual valuations
                 - total_valuation: Portfolio-level valuation analysis
-                - citations: Industry references used (if requested)
+                - citations: Industry references used
                 - transaction_id: The transaction ID that was analyzed
                 - error: Error message if any
         """
         try:
-            # Extract input parameters
+            # Extract only transaction_id input parameter - the only parameter expected from an agent
             transaction_id = input_data.get("transaction_id", "")
-            analysis_type = input_data.get("analysis_type", "all")
-            include_recommendations = input_data.get("include_recommendations", True)
-            include_citations = input_data.get("include_citations", True)
-            zip_code_database = input_data.get("zip_code_database", {})
+            
+            # Use default values for all other settings
+            analysis_type = self._default_analysis_type
+            include_recommendations = self._default_include_recommendations
+            include_citations = self._default_include_citations
             
             if not transaction_id:
                 return {
