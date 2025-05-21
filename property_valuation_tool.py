@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
+import pymongo
+from pymongo import MongoClient
 from Blueprint.Templates.Tools.python_base_tool import BaseTool
 #from tool_py_base_class import BaseTool
 
@@ -18,10 +20,13 @@ class PropertyValuationTool(BaseTool):
     # Studio-required metadata (all at class level)
     name = "PropertyValuationTool"
     description = "Analyzes and validates property values from Statement of Values (SOV) data for commercial insurance submissions"
-    requires_env_vars = []
+    requires_env_vars = [
+        "MONGO_CONNECTION_STRING: mongodb+srv://artifi:root@artifi.2vi2m.mongodb.net/?retryWrites=true&w=majority&appName=Artifi"
+    ]
     dependencies = [
         ("pandas", "pandas"),
-        ("numpy", "numpy")
+        ("numpy", "numpy"),
+        ("pymongo", "pymongo")
     ]
     uses_llm = False
     default_llm_model = None
@@ -32,9 +37,9 @@ class PropertyValuationTool(BaseTool):
     input_schema = {
         "type": "object",
         "properties": {
-            "submission_data": {
-                "type": "object",
-                "description": "Complete submission data including property information"
+            "transaction_id": {
+                "type": "string",
+                "description": "The unique transaction ID (artifi_id) to retrieve submission data from MongoDB"
             },
             "analysis_type": {
                 "type": "string",
@@ -58,7 +63,7 @@ class PropertyValuationTool(BaseTool):
                 "default": {}
             }
         },
-        "required": ["submission_data"]
+        "required": ["transaction_id"]
     }
     
     output_schema = {
@@ -126,12 +131,16 @@ class PropertyValuationTool(BaseTool):
                     "risk_thresholds": {"type": "object"}
                 }
             },
+            "transaction_id": {
+                "type": "string",
+                "description": "The transaction ID that was analyzed"
+            },
             "error": {
                 "type": "string",
                 "description": "Error message if any"
             }
         },
-        "required": ["analysis_summary", "property_valuations", "total_valuation"]
+        "required": ["analysis_summary", "property_valuations", "total_valuation", "transaction_id"]
     }
     
     # Studio configuration
@@ -140,7 +149,7 @@ class PropertyValuationTool(BaseTool):
     respond_back_to_agent = True
     response_type = "json"
     call_back_url = None
-    database_config_uri = None
+    database_config_uri = "mongodb+srv://artifi:root@artifi.2vi2m.mongodb.net/?retryWrites=true&w=majority&appName=Artifi"
     
     # Construction cost base rates by building class ($/sqft)
     _construction_costs = {
@@ -270,13 +279,92 @@ class PropertyValuationTool(BaseTool):
         "content_ratio": 5            # Points for unusual content ratio
     }
     
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize the tool and connect to MongoDB."""
+        super().__init__(config)
+        self._mongo_client = None
+    
+    def _get_mongo_client(self):
+        """Get or create MongoDB client."""
+        if self._mongo_client is None:
+            connection_string = os.getenv("MONGO_CONNECTION_STRING")
+            self._mongo_client = MongoClient(connection_string)
+        return self._mongo_client
+    
+    def _fetch_submission_data(self, transaction_id: str) -> Dict[str, Any]:
+        """
+        Fetch submission data from MongoDB using the transaction ID.
+        
+        Args:
+            transaction_id: The unique transaction ID (artifi_id)
+            
+        Returns:
+            The submission data from MongoDB
+        """
+        try:
+            client = self._get_mongo_client()
+            
+            # Get all available databases and find the Submission_Intake database (case-insensitive)
+            all_dbs = client.list_database_names()
+            db_name = None
+            for database in all_dbs:
+                if database.lower() == "submission_intake":
+                    db_name = database
+                    break
+            
+            if not db_name:
+                print("Could not find Submission_Intake database (case-insensitive)")
+                return {}
+                
+            print(f"Using database: {db_name}")
+            db = client[db_name]
+            
+            # Get all available collections and find the BP_DATA collection (case-insensitive)
+            all_collections = db.list_collection_names()
+            collection_name = None
+            for coll in all_collections:
+                if coll.lower() == "bp_data":
+                    collection_name = coll
+                    break
+            
+            if not collection_name:
+                print("Could not find BP_DATA collection (case-insensitive)")
+                return {}
+                
+            print(f"Using collection: {collection_name}")
+            collection = db[collection_name]
+            
+            # Query the collection for the transaction ID
+            print(f"Searching for document with artifi_id: {transaction_id}")
+            document = collection.find_one({"artifi_id": transaction_id})
+            
+            if document is None:
+                print(f"Document with artifi_id {transaction_id} not found")
+                return {}
+            
+            print(f"Found document with _id: {document.get('_id')}, case_id: {document.get('case_id', '')}")
+            
+            # Extract submission_data from the document
+            submission_data = document.get("submission_data", {})
+            if not submission_data:
+                print("Document does not contain submission_data")
+            else:
+                print(f"Successfully extracted submission_data with {len(submission_data)} top-level keys")
+                
+            return submission_data
+        except Exception as e:
+            print(f"Error fetching submission data: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {}
+    
     def run_sync(self, input_data: Dict[str, Any], llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Analyze Statement of Values data to validate property valuations.
         
         Args:
             input_data: Dictionary containing:
-                - submission_data: Complete submission data with property information
+                - transaction_id: Unique transaction ID to retrieve data from MongoDB
                 - analysis_type: Type of analysis to perform
                 - include_recommendations: Whether to include recommendations
                 - include_citations: Whether to include industry reference citations
@@ -290,15 +378,29 @@ class PropertyValuationTool(BaseTool):
                 - anomalies: Properties with unusual valuations
                 - total_valuation: Portfolio-level valuation analysis
                 - citations: Industry references used (if requested)
+                - transaction_id: The transaction ID that was analyzed
                 - error: Error message if any
         """
         try:
             # Extract input parameters
-            submission_data = input_data.get("submission_data", {})
+            transaction_id = input_data.get("transaction_id", "")
             analysis_type = input_data.get("analysis_type", "all")
             include_recommendations = input_data.get("include_recommendations", True)
             include_citations = input_data.get("include_citations", True)
             zip_code_database = input_data.get("zip_code_database", {})
+            
+            if not transaction_id:
+                return {
+                    "analysis_summary": {},
+                    "property_valuations": [],
+                    "anomalies": [],
+                    "total_valuation": {},
+                    "transaction_id": "",
+                    "error": "No transaction ID provided for analysis"
+                }
+            
+            # Fetch submission data from MongoDB
+            submission_data = self._fetch_submission_data(transaction_id)
             
             if not submission_data:
                 return {
@@ -306,18 +408,37 @@ class PropertyValuationTool(BaseTool):
                     "property_valuations": [],
                     "anomalies": [],
                     "total_valuation": {},
-                    "error": "No submission data provided for analysis"
+                    "transaction_id": transaction_id,
+                    "error": f"No submission data found for transaction ID: {transaction_id}"
                 }
             
             # Extract property data from submission
             properties = self._extract_properties_from_submission(submission_data)
             
             if not properties:
+                print("No properties found in the submission data")
                 return {
-                    "analysis_summary": {},
+                    "analysis_summary": {
+                        "total_properties": 0,
+                        "properties_with_risk_flags": 0,
+                        "overall_variance_percentage": 0.0,
+                        "avg_property_value": 0.0,
+                        "valuation_quality": "Unknown",
+                        "total_building_value": 0.0,
+                        "total_content_value": 0.0,
+                        "total_business_income_value": 0.0,
+                        "insurance_to_value_ratio": 0.0
+                    },
                     "property_valuations": [],
                     "anomalies": [],
-                    "total_valuation": {},
+                    "total_valuation": {
+                        "reported_total": 0.0,
+                        "calculated_total": 0.0,
+                        "variance_percentage": 0.0,
+                        "variance_amount": 0.0,
+                        "insurance_to_value_ratio": 0.0
+                    },
+                    "transaction_id": transaction_id,
                     "error": "No property data found in submission"
                 }
             
@@ -368,6 +489,9 @@ class PropertyValuationTool(BaseTool):
                 if square_footage <= 0:
                     calculated_value = building_value  # Default to reported value if no square footage
                     risk_flags = ["MISSING_SQUARE_FOOTAGE"]
+                    matched_construction = "Unknown"
+                    matched_occupancy = "Unknown"
+                    building_age = current_year - year_built if year_built > 0 else 20
                 else:
                     # Standardize values to closest match in our reference data
                     matched_construction = self._find_closest_match(construction_type, self._construction_costs.keys())
@@ -448,7 +572,7 @@ class PropertyValuationTool(BaseTool):
                         "square_footage": float(square_footage),
                         "construction_type": matched_construction if 'matched_construction' in locals() else "Unknown",
                         "year_built": int(year_built) if year_built > 0 else None,
-                        "building_age": int(building_age) if 'building_age' in locals() else None,
+                        "building_age": int(building_age),  # Now building_age is always defined
                         "occupancy": matched_occupancy if 'matched_occupancy' in locals() else "Unknown",
                         "state": state,
                         "content_value": float(content_value),
@@ -515,7 +639,8 @@ class PropertyValuationTool(BaseTool):
                 "analysis_summary": analysis_summary,
                 "property_valuations": property_valuations,
                 "anomalies": all_anomalies,
-                "total_valuation": total_valuation
+                "total_valuation": total_valuation,
+                "transaction_id": transaction_id
             }
             
             # Add citations if requested
@@ -536,77 +661,383 @@ class PropertyValuationTool(BaseTool):
                 "property_valuations": [],
                 "anomalies": [],
                 "total_valuation": {},
+                "transaction_id": transaction_id if "transaction_id" in locals() else "",
                 "error": f"Error during property valuation analysis: {str(e)}"
             }
     
     def _extract_properties_from_submission(self, submission_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract property data from submission in various possible formats."""
+        """
+        Extract property data from submission and merge related properties from different sections.
+        This enhanced version correlates and combines data from Property and Advanced Property sections.
+        """
         properties = []
+        standard_properties = []
+        advanced_properties = []
         
-        # Check common paths where property data might be stored
-        possible_paths = [
-            ["properties"],
-            ["submission", "properties"],
-            ["data", "properties"],
-            ["locations"],
-            ["submission", "locations"],
-            ["data", "locations"],
-            ["buildings"],
-            ["submission", "buildings"],
-            ["data", "buildings"],
-            ["statement_of_values"],
-            ["submission", "statement_of_values"],
-            ["data", "statement_of_values"],
-            ["sov"]
-        ]
+        print(f"Extracting properties from submission data with keys: {list(submission_data.keys())}")
         
-        # Try to find properties in the submission data
-        for path in possible_paths:
-            current = submission_data
-            valid_path = True
+        # Step 1: Extract standard properties from "Property" section
+        if "Property" in submission_data and isinstance(submission_data["Property"], list):
+            print(f"Found {len(submission_data['Property'])} properties in 'Property' section")
+            for item in submission_data["Property"]:
+                if isinstance(item, dict):
+                    property_data = {}
+                    
+                    # Extract standard facts if available
+                    if "standard_facts" in item and isinstance(item["standard_facts"], dict):
+                        for key, value in item["standard_facts"].items():
+                            # Extract value from nested structure if needed
+                            if isinstance(value, dict) and "value" in value:
+                                property_data[key] = value["value"]
+                            else:
+                                property_data[key] = value
+                    
+                    # Extract limits if available
+                    if "limits" in item and isinstance(item["limits"], dict):
+                        # Extract 100_pct_coverage_limits
+                        if "100_pct_coverage_limits" in item["limits"] and isinstance(item["limits"]["100_pct_coverage_limits"], dict):
+                            for key, value in item["limits"]["100_pct_coverage_limits"].items():
+                                if isinstance(value, dict) and "value" in value:
+                                    property_data[f"coverage_{key.lower()}"] = value["value"]
+                                else:
+                                    property_data[f"coverage_{key.lower()}"] = value
+                        
+                        # Extract 100_pct_limit
+                        if "100_pct_limit" in item["limits"]:
+                            if isinstance(item["limits"]["100_pct_limit"], dict) and "value" in item["limits"]["100_pct_limit"]:
+                                property_data["building_value"] = item["limits"]["100_pct_limit"]["value"]
+                            else:
+                                property_data["building_value"] = item["limits"]["100_pct_limit"]
+                    
+                    # Extract building details if available
+                    if "building_details" in item and isinstance(item["building_details"], dict):
+                        for key, value in item["building_details"].items():
+                            if isinstance(value, dict) and "value" in value:
+                                property_data[key] = value["value"]
+                            else:
+                                property_data[key] = value
+                    
+                    # Add a key to identify this property and for matching
+                    if "location_doc_id" in property_data:
+                        location_id = property_data["location_doc_id"]
+                        property_data["_location_id"] = location_id  # Special matching key
+                    
+                    if "location_address" in property_data:
+                        property_data["_address"] = property_data["location_address"]  # Special matching key
+                    
+                    standard_properties.append(property_data)
+        
+        # Step 2: Extract advanced properties from "Advanced Property" section
+        if "Advanced Property" in submission_data and isinstance(submission_data["Advanced Property"], list):
+            print(f"Found {len(submission_data['Advanced Property'])} properties in 'Advanced Property' section")
+            for item in submission_data["Advanced Property"]:
+                if isinstance(item, dict):
+                    property_data = {}
+                    
+                    # Extract advanced_facts if available
+                    if "advanced_facts" in item and isinstance(item["advanced_facts"], dict):
+                        for key, value in item["advanced_facts"].items():
+                            # Extract value from nested structure if needed
+                            if isinstance(value, dict) and "value" in value:
+                                property_data[key] = value["value"]
+                            else:
+                                property_data[key] = value
+                    
+                    # Extract other sections if available
+                    for section in ["rms_details", "atc_details", "protection_details"]:
+                        if section in item and isinstance(item[section], dict):
+                            for key, value in item[section].items():
+                                if isinstance(value, dict) and "value" in value:
+                                    property_data[key] = value["value"]
+                                else:
+                                    property_data[key] = value
+                    
+                    # Add a key to identify this property and for matching
+                    if "location_id" in property_data:
+                        location_id = property_data["location_id"]
+                        property_data["_location_id"] = location_id  # Special matching key
+                        
+                        # Parse location ID to extract numeric portion for matching
+                        # Example: "LUS118E734CE9D1B4935" -> "D1B4935" or "1"
+                        match = re.search(r'([0-9]+|[A-Z][0-9][A-Z][0-9]+)', location_id)
+                        if match:
+                            property_data["_location_doc_id"] = match.group(1)
+                    
+                    advanced_properties.append(property_data)
+        
+        # Create address and location mappings for better matching
+        address_to_properties = {}
+        for i, prop in enumerate(standard_properties):
+            address = prop.get("location_address", "")
+            if address:
+                # Clean and standardize address
+                clean_addr = re.sub(r'[^a-zA-Z0-9]', '', address.lower())
+                if clean_addr not in address_to_properties:
+                    address_to_properties[clean_addr] = []
+                address_to_properties[clean_addr].append(i)
+        
+        # Step 3: Map properties based on location and address for merging
+        property_map = {}
+        merged_properties = []
+        
+        print(f"Starting property merge process with {len(standard_properties)} standard and {len(advanced_properties)} advanced properties")
+        
+        # Process standard properties first (these contain the main building values)
+        for i, std_prop in enumerate(standard_properties):
+            prop_id = f"PROP_{i+1}"
+            location_doc_id = std_prop.get("location_doc_id", "")
             
-            for key in path:
-                if isinstance(current, dict) and key in current:
-                    current = current[key]
-                else:
-                    valid_path = False
-                    break
+            # Create a new merged property with the standard property as base
+            merged_prop = std_prop.copy()
+            merged_prop["property_id"] = prop_id
+            merged_prop["source"] = "standard"
             
-            if valid_path and (isinstance(current, list) or isinstance(current, dict)):
-                if isinstance(current, dict):
-                    # If it's a dictionary, check if it has property-like entries
-                    for key, value in current.items():
-                        if isinstance(value, dict):
-                            # Add an ID if it doesn't have one
-                            if "id" not in value and "property_id" not in value:
-                                value["property_id"] = key
-                            properties.append(value)
-                elif isinstance(current, list):
-                    # If it's a list, assume it's a list of properties
-                    properties.extend(current)
+            # Add to merged properties list
+            merged_properties.append(merged_prop)
+            
+            # Create mappings for location ID and address for matching
+            if location_doc_id:
+                property_map[f"doc_id:{location_doc_id}"] = i
+            
+            address = std_prop.get("location_address", "")
+            if address:
+                clean_addr = re.sub(r'[^a-zA-Z0-9]', '', address.lower())
+                property_map[f"addr:{clean_addr}"] = i
+        
+        # Now process advanced properties and merge with existing ones where possible
+        for adv_prop in advanced_properties:
+            location_id = adv_prop.get("location_id", "")
+            matched_index = None
+            
+            # Try to match by parsed location ID to location_doc_id
+            if "_location_doc_id" in adv_prop:
+                doc_id = adv_prop["_location_doc_id"]
+                key = f"doc_id:{doc_id}"
+                if key in property_map:
+                    matched_index = property_map[key]
+                    print(f"Matched advanced property by doc_id: {doc_id} -> property {matched_index+1}")
+            
+            # Try to match by exact location_id
+            if matched_index is None and location_id:
+                # Try to match location_id with a standard property
+                for i, std_prop in enumerate(merged_properties):
+                    std_location_id = std_prop.get("location_id", "")
+                    if std_location_id and std_location_id == location_id:
+                        matched_index = i
+                        print(f"Matched advanced property by location_id: {location_id} -> property {i+1}")
+                        break
+            
+            # If not matched yet, try to use address
+            if matched_index is None:
+                # Check if we can match by address
+                address = adv_prop.get("location_address", "")
+                if address:
+                    clean_addr = re.sub(r'[^a-zA-Z0-9]', '', address.lower())
+                    key = f"addr:{clean_addr}"
+                    if key in property_map:
+                        matched_index = property_map[key]
+                        print(f"Matched advanced property by address: {address} -> property {matched_index+1}")
+            
+            # Try matching based on similar addresses
+            if matched_index is None:
+                # Check if any property has a similar address
+                for i, merged_prop in enumerate(merged_properties):
+                    std_address = merged_prop.get("location_address", "")
+                    adv_address = adv_prop.get("location_address", "")
+                    
+                    if std_address and adv_address:
+                        # Look for overlapping parts
+                        std_parts = std_address.split()
+                        adv_parts = adv_address.split()
+                        
+                        common_parts = set(std_parts) & set(adv_parts)
+                        if len(common_parts) > 1:  # If they share multiple words
+                            matched_index = i
+                            print(f"Matched advanced property by similar address: {adv_address} -> property {i+1}")
+                            break
+            
+            # Try to match by numeric property order if addresses or locations aren't available
+            if matched_index is None and len(advanced_properties) == len(standard_properties):
+                # Try to find a property that hasn't been matched with advanced data yet
+                for i, merged_prop in enumerate(merged_properties):
+                    if merged_prop.get("source") == "standard" and "total_building_area_sqft" not in merged_prop:
+                        matched_index = i
+                        print(f"Matched advanced property by position: advanced {adv_prop.get('location_id', '')} -> property {i+1}")
+                        break
+            
+            # If we found a match, update the merged property with advanced data
+            if matched_index is not None:
+                # Update the merged property with advanced data
+                for key, value in adv_prop.items():
+                    if key not in merged_properties[matched_index] or not merged_properties[matched_index][key]:
+                        if not key.startswith("_"):  # Skip helper keys
+                            merged_properties[matched_index][key] = value
                 
-                if properties:
-                    break
+                # Mark as having advanced data
+                merged_properties[matched_index]["has_advanced_data"] = True
+            else:
+                # If no match found, add as a new property
+                adv_prop["property_id"] = f"PROP_{len(merged_properties)+1}"
+                adv_prop["source"] = "advanced"
+                adv_prop["has_advanced_data"] = True
+                merged_properties.append(adv_prop)
+                print(f"Added new property from advanced data: {adv_prop.get('location_id', '')}")
         
-        # If no properties found in standard paths, try to infer from structure
-        if not properties and isinstance(submission_data, dict):
-            # Check if the submission itself is a single property
-            if any(key in submission_data for key in ["building_value", "square_footage", "address", "construction"]):
-                properties = [submission_data]
+        # Step 4: Post-process merged properties to standardize field names and extract values
+        processed_properties = []
+        
+        for i, prop in enumerate(merged_properties):
+            # Create a clean property record with standardized fields
+            clean_prop = {}
             
-            # Check if the submission is a dictionary of properties
-            elif all(isinstance(value, dict) for value in submission_data.values()):
-                for key, value in submission_data.items():
-                    if isinstance(value, dict):
-                        if "id" not in value and "property_id" not in value:
-                            value["property_id"] = key
-                        properties.append(value)
+            # Set a property ID
+            clean_prop["property_id"] = prop.get("property_id", f"PROP_{i+1}")
+            
+            # Extract address with a fallback chain
+            address_components = []
+            address = prop.get("address", "") or prop.get("location_address", "")
+            city = prop.get("city", "") or prop.get("location_city", "")
+            state = prop.get("state", "") or prop.get("location_state", "")
+            zip_code = prop.get("zip", "") or prop.get("zip_code", "") or prop.get("postal_code", "") or prop.get("location_postal_code", "")
+            
+            if address:
+                address_components.append(address)
+            if city:
+                address_components.append(city)
+            if state:
+                address_components.append(state)
+            if zip_code:
+                address_components.append(zip_code)
+            
+            clean_prop["address"] = ", ".join(address_components) if address_components else "Address Unknown"
+            
+            # Extract building value with fallbacks
+            building_value = self._get_numeric_value(prop, [
+                "building_value", "building_values", "value", "reported_value", 
+                "building", "building_limit", "coverage_building", "100_pct_limit"
+            ])
+            clean_prop["building_value"] = building_value
+            
+            # Extract square footage with fallbacks
+            square_footage = self._get_numeric_value(prop, [
+                "square_footage", "square_feet", "sq_ft", "sqft", "area", 
+                "building_area", "total_area", "total_building_area_sqft"
+            ])
+            clean_prop["square_footage"] = square_footage
+            
+            # Extract year built with fallbacks
+            year_built = self._get_numeric_value(prop, [
+                "year_built", "year", "built", "construction_year", "year_of_construction"
+            ])
+            clean_prop["year_built"] = year_built
+            
+            # Extract construction type with fallbacks
+            construction_type = self._extract_value(prop, [
+                "construction", "construction_type", "building_class", "class", 
+                "construction_class"
+            ])
+            clean_prop["construction_type"] = construction_type
+            
+            # Extract occupancy with fallbacks
+            occupancy = self._extract_value(prop, [
+                "occupancy", "occupancy_type", "use", "building_use", 
+                "class_description", "location_occupancy_description"
+            ])
+            clean_prop["occupancy"] = occupancy
+            
+            # Extract state with fallbacks
+            state = self._extract_value(prop, [
+                "state", "state_code", "location_state"
+            ])
+            clean_prop["state"] = state
+            
+            # Extract whether property is sprinklered
+            sprinklered = self._extract_boolean(prop, [
+                "sprinklered", "sprinkler", "has_sprinklers", "fire_protection",
+                "location_have_sprinklers"
+            ])
+            clean_prop["sprinklered"] = sprinklered
+            
+            # Extract content value with fallbacks
+            content_value = self._get_numeric_value(prop, [
+                "contents", "content_value", "content", "contents_value", 
+                "personal_property", "coverage_contents", "coverage_personal_property"
+            ])
+            clean_prop["content_value"] = content_value
+            
+            # Extract business income value with fallbacks
+            business_income_value = self._get_numeric_value(prop, [
+                "business_income", "bi", "income", "business_interruption", 
+                "time_element", "coverage_business_income", "coverage_business_interruption"
+            ])
+            clean_prop["business_income_value"] = business_income_value
+            
+            # Extract roof information
+            roof_age = self._get_numeric_value(prop, ["roof_age", "roof_year", "roof"])
+            roof_type = self._extract_value(prop, ["roof_type", "roof"])
+            clean_prop["roof_age"] = roof_age
+            clean_prop["roof_type"] = roof_type
+            
+            # Add the processed property to the final list
+            processed_properties.append(clean_prop)
         
-        # If submission_data is directly a list, assume it's a list of properties
-        elif not properties and isinstance(submission_data, list):
-            properties = submission_data
+        # Final output deduplication - if we have properties with the same address, combine them
+        print(f"Final property count before deduplication: {len(processed_properties)}")
         
-        return properties
+        # Group properties by address for deduplication
+        address_groups = {}
+        for prop in processed_properties:
+            address = prop["address"]
+            if address not in address_groups:
+                address_groups[address] = []
+            address_groups[address].append(prop)
+        
+        # Combine properties with same address
+        final_properties = []
+        for address, props in address_groups.items():
+            if len(props) == 1:
+                # Only one property with this address, add as-is
+                final_properties.append(props[0])
+            else:
+                # Multiple properties with this address, merge them
+                print(f"Merging {len(props)} properties with address: {address}")
+                merged = {"address": address}
+                
+                # Set property_id to the first one
+                merged["property_id"] = props[0]["property_id"]
+                
+                # For other fields, take the first non-empty value
+                for field in ["building_value", "square_footage", "year_built", "construction_type", 
+                             "occupancy", "state", "sprinklered", "content_value", 
+                             "business_income_value", "roof_age", "roof_type"]:
+                    # Get all non-zero/non-empty values
+                    values = [p[field] for p in props if p.get(field)]
+                    if field in ["building_value", "square_footage", "content_value", "business_income_value"]:
+                        # For numeric fields, take the max value
+                        merged[field] = max(values) if values else 0
+                    else:
+                        # For other fields, take the first value
+                        merged[field] = values[0] if values else (0 if field in ["year_built", "roof_age"] else "")
+                
+                final_properties.append(merged)
+        
+        print(f"Final property count after processing: {len(final_properties)}")
+        
+        # Print details of extracted properties for debugging
+        if final_properties:
+            print("\nExtracted property details:")
+            for i, prop in enumerate(final_properties):
+                print(f"Property {i+1} (ID: {prop['property_id']}):")
+                print(f"  Address: {prop['address']}")
+                print(f"  Building Value: ${prop['building_value']:,.2f}")
+                print(f"  Square Footage: {prop['square_footage']:,.0f}")
+                print(f"  Year Built: {prop['year_built']}")
+                print(f"  Construction Type: {prop['construction_type']}")
+                print(f"  Occupancy: {prop['occupancy']}")
+                print(f"  Sprinklered: {prop['sprinklered']}")
+                print(f"  Roof Type: {prop['roof_type']}")
+        
+        return final_properties
     
     def _extract_address(self, property_data: Dict[str, Any]) -> str:
         """Extract address from property data in various formats."""
@@ -622,33 +1053,36 @@ class PropertyValuationTool(BaseTool):
         # Check for a direct address field
         for field in address_fields:
             if field in property_data and property_data[field]:
+                # Check if it's a dict with 'value' field (new format)
+                if isinstance(property_data[field], dict) and "value" in property_data[field]:
+                    return str(property_data[field]["value"])
                 return str(property_data[field])
         
         # Check for address components
         address_components = []
         
         # Street
-        street = property_data.get("street", "") or property_data.get("address_line_1", "")
+        street = self._extract_value(property_data, ["street", "address_line_1"])
         if street:
             address_components.append(str(street))
         
         # Street line 2 (optional)
-        street2 = property_data.get("address_line_2", "")
+        street2 = self._extract_value(property_data, ["address_line_2"])
         if street2:
             address_components.append(str(street2))
         
         # City
-        city = property_data.get("city", "")
+        city = self._extract_value(property_data, ["city", "location_city"])
         if city:
             address_components.append(str(city))
         
         # State
-        state = property_data.get("state", "") or property_data.get("state_code", "")
+        state = self._extract_value(property_data, ["state", "state_code", "location_state"])
         if state:
             address_components.append(str(state))
         
         # Zip
-        zip_code = property_data.get("zip", "") or property_data.get("zip_code", "") or property_data.get("postal_code", "")
+        zip_code = self._extract_value(property_data, ["zip", "zip_code", "postal_code", "location_postal_code"])
         if zip_code:
             address_components.append(str(zip_code))
         
@@ -658,14 +1092,44 @@ class PropertyValuationTool(BaseTool):
         return "Address Unknown"
     
     def _extract_state(self, property_data: Dict[str, Any], address: str) -> str:
-        """Extract state from property data or address."""
-        # Try to get state directly from property data
-        state = property_data.get("state", "") or property_data.get("state_code", "")
+        """
+        Extract state from property data or address.
+        Enhanced to handle nested data structures and various state field names.
+        """
+        # Try to get state directly from property data with various possible field names
+        for state_field in ["state", "state_code", "location_state"]:
+            if state_field in property_data:
+                value = property_data[state_field]
+                # Handle nested value structure
+                if isinstance(value, dict) and "value" in value:
+                    value = value["value"]
+                
+                if value and isinstance(value, str):
+                    # If it's a 2-letter code, return it
+                    if len(value) == 2:
+                        return value.upper()
+                    # If it's a state name, find the code
+                    state_codes = {
+                        "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
+                        "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+                        "FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
+                        "ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
+                        "KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
+                        "MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN", "MISSISSIPPI": "MS",
+                        "MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
+                        "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY",
+                        "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK",
+                        "OREGON": "OR", "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
+                        "SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
+                        "VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
+                        "WISCONSIN": "WI", "WYOMING": "WY", "DISTRICT OF COLUMBIA": "DC"
+                    }
+                    value_upper = value.upper()
+                    for state_name, code in state_codes.items():
+                        if state_name.startswith(value_upper) or value_upper.startswith(state_name):
+                            return code
         
-        if state and len(state) == 2:
-            return state.upper()
-        
-        # Try to extract from address
+        # Try to extract from address if we haven't found a state yet
         if address:
             # Look for 2-letter state code surrounded by spaces, commas, or at the end
             state_match = re.search(r'[,\s]([A-Z]{2})[,\s]', f" {address} ")
@@ -689,11 +1153,25 @@ class PropertyValuationTool(BaseTool):
                 "WISCONSIN": "WI", "WYOMING": "WY"
             }
             
+            address_upper = address.upper()
             for name, code in state_names.items():
-                if name in address.upper():
+                if name in address_upper:
+                    return code
+                # Also check abbreviations
+                if code in address_upper.split():
                     return code
         
-        # Default to a middle-of-the-road state if we can't determine
+        # Check for common California cities as a fallback for this specific case
+        ca_cities = ["LOS ANGELES", "SAN FRANCISCO", "SAN DIEGO", "SACRAMENTO", "FRESNO", 
+                    "OAKLAND", "VERNON", "SANTA MONICA", "LONG BEACH", "ANAHEIM", "SAN JOSE"]
+        
+        if address:
+            address_upper = address.upper()
+            for city in ca_cities:
+                if city in address_upper:
+                    return "CA"
+        
+        # Return the default if no state found
         return "IL"  # Illinois as a default
     
     def _get_numeric_value(self, data: Dict[str, Any], possible_keys: List[str]) -> float:
@@ -702,6 +1180,10 @@ class PropertyValuationTool(BaseTool):
             if key in data:
                 try:
                     value = data[key]
+                    # Handle nested dict with 'value' key (new format)
+                    if isinstance(value, dict) and "value" in value:
+                        value = value["value"]
+                    
                     # Handle string values with commas and currency symbols
                     if isinstance(value, str):
                         value = value.replace("$", "").replace(",", "")
@@ -713,8 +1195,14 @@ class PropertyValuationTool(BaseTool):
     def _extract_value(self, data: Dict[str, Any], possible_keys: List[str]) -> str:
         """Extract a value from a dictionary trying multiple possible keys."""
         for key in possible_keys:
-            if key in data and data[key]:
-                return str(data[key])
+            if key in data:
+                # Handle nested dict with 'value' key (new format)
+                if isinstance(data[key], dict) and "value" in data[key]:
+                    if data[key]["value"]:
+                        return str(data[key]["value"])
+                # Handle direct value
+                elif data[key]:
+                    return str(data[key])
         return ""  # Default
     
     def _extract_boolean(self, data: Dict[str, Any], possible_keys: List[str]) -> bool:
@@ -722,6 +1210,10 @@ class PropertyValuationTool(BaseTool):
         for key in possible_keys:
             if key in data:
                 value = data[key]
+                # Handle nested dict with 'value' key (new format)
+                if isinstance(value, dict) and "value" in value:
+                    value = value["value"]
+                
                 if isinstance(value, bool):
                     return value
                 if isinstance(value, str):
@@ -967,7 +1459,8 @@ if __name__ == "__main__":
         "output_schema": PropertyValuationTool.output_schema,
         "response_type": PropertyValuationTool.response_type,
         "direct_to_user": PropertyValuationTool.direct_to_user,
-        "respond_back_to_agent": PropertyValuationTool.respond_back_to_agent
+        "respond_back_to_agent": PropertyValuationTool.respond_back_to_agent,
+        "database_config_uri": PropertyValuationTool.database_config_uri
     }
     
     # Print metadata for inspection
