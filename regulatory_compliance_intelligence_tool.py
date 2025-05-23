@@ -395,7 +395,7 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
             # Extract regulatory context from submission
             regulatory_context = self._extract_regulatory_context(submission_data)
 
-            if not regulatory_context["locations"]:
+            if not regulatory_context.get("locations_analyzed"):
                 return {
                     "compliance_summary": {
                         "overall_compliance_score": 0,
@@ -424,7 +424,7 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
                 }
 
             # Perform regulatory compliance analysis
-            print(f"Analyzing regulatory compliance for {len(regulatory_context['locations'])} locations")
+            print(f"Analyzing regulatory compliance for {len(regulatory_context['locations_analyzed'])} locations")
 
             # Assess federal compliance
             federal_assessment = self._assess_federal_compliance(regulatory_context)
@@ -493,71 +493,88 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
             "geographic_scope": "",
         }
 
-        # Extract properties from submission (reusing PropertyValuationTool logic)
-        properties = self._extract_properties_from_submission(submission_data)
-        
-        context["total_locations"] = len(properties)
-        total_value = 0
-        states = set()
-        industries = set()
-        construction_types = set()
-        occupancy_types = set()
-        risk_factors = set()
-
-        for prop in properties:
-            # Location analysis
-            address = prop.get("address", "Unknown")
-            state = self._extract_state_from_property(prop)
+        try:
+            # Extract properties from submission (reusing PropertyValuationTool logic)
+            properties = self._extract_properties_from_submission(submission_data)
             
-            location_info = {
-                "address": address,
-                "state": state,
-                "building_value": prop.get("building_value", 0),
-                "square_footage": prop.get("square_footage", 0),
-                "construction_type": prop.get("construction_type", "Unknown"),
-                "occupancy": prop.get("occupancy", "Unknown"),
-                "year_built": prop.get("year_built", 0),
-                "sprinklered": prop.get("sprinklered", False),
-            }
-
-            # Check for special risk factors
-            if state in ["TX", "FL", "LA"] and self._is_coastal_location(address):
-                risk_factors.add("Coastal Location")
-            if state in ["CA"] and self._is_seismic_zone(address):
-                risk_factors.add("Seismic Zone")
-            if state in ["CA", "OR", "WA"] and self._is_wildfire_zone(address):
-                risk_factors.add("Wildfire Zone")
-            if prop.get("building_value", 0) > 500000 and self._is_flood_zone(address):
-                risk_factors.add("Flood Zone")
-
-            context["locations_analyzed"].append(location_info)
+            if not properties:
+                print("No properties found in submission data")
+                return context
             
-            # Aggregate data
-            total_value += prop.get("building_value", 0)
-            if state:
-                states.add(state)
-            if prop.get("construction_type"):
-                construction_types.add(prop.get("construction_type"))
-            if prop.get("occupancy"):
-                occupancy_types.add(prop.get("occupancy"))
+            context["total_locations"] = len(properties)
+            total_value = 0
+            states = set()
+            industries = set()
+            construction_types = set()
+            occupancy_types = set()
+            risk_factors = set()
 
-        context["total_building_value"] = total_value
-        context["geographic_scope"] = ", ".join(sorted(states)) if states else "Unknown"
-        context["construction_types"] = list(construction_types)
-        context["occupancy_types"] = list(occupancy_types)
-        context["special_risk_factors"] = list(risk_factors)
+            for prop in properties:
+                # Location analysis
+                address = prop.get("address", "Unknown")
+                state = self._extract_state_from_property(prop)
+                
+                location_info = {
+                    "address": address,
+                    "state": state,
+                    "building_value": prop.get("building_value", 0),
+                    "square_footage": prop.get("square_footage", 0),
+                    "construction_type": prop.get("construction_type", "Unknown"),
+                    "occupancy": prop.get("occupancy", "Unknown"),
+                    "year_built": prop.get("year_built", 0),
+                    "sprinklered": prop.get("sprinklered", False),
+                }
 
-        # Extract industry information (simplified)
-        if any("manufacturing" in occ.lower() for occ in occupancy_types):
-            industries.add("Manufacturing")
-        if any("office" in occ.lower() for occ in occupancy_types):
-            industries.add("Office")
-        if any("retail" in occ.lower() for occ in occupancy_types):
-            industries.add("Retail")
-        if any("warehouse" in occ.lower() for occ in occupancy_types):
-            industries.add("Warehouse")
+                # Check for special risk factors
+                if state in ["TX", "FL", "LA"] and self._is_coastal_location(address):
+                    risk_factors.add("Coastal Location")
+                if state in ["CA"] and self._is_seismic_zone(address):
+                    risk_factors.add("Seismic Zone")
+                if state in ["CA", "OR", "WA"] and self._is_wildfire_zone(address):
+                    risk_factors.add("Wildfire Zone")
+                if prop.get("building_value", 0) > 500000 and self._is_flood_zone(address):
+                    risk_factors.add("Flood Zone")
 
-        context["industries_identified"] = list(industries)
+                context["locations_analyzed"].append(location_info)
+                
+                # Aggregate data
+                total_value += prop.get("building_value", 0)
+                if state:
+                    states.add(state)
+                if prop.get("construction_type"):
+                    construction_types.add(prop.get("construction_type"))
+                if prop.get("occupancy"):
+                    occupancy_types.add(prop.get("occupancy"))
+
+            context["total_building_value"] = total_value
+            context["geographic_scope"] = ", ".join(sorted(states)) if states else "Unknown"
+            context["construction_types"] = list(construction_types)
+            context["occupancy_types"] = list(occupancy_types)
+            context["special_risk_factors"] = list(risk_factors)
+
+            # Extract industry information (simplified)
+            if any("manufacturing" in occ.lower() for occ in occupancy_types):
+                industries.add("Manufacturing")
+            if any("office" in occ.lower() for occ in occupancy_types):
+                industries.add("Office")
+            if any("retail" in occ.lower() for occ in occupancy_types):
+                industries.add("Retail")
+            if any("warehouse" in occ.lower() for occ in occupancy_types):
+                industries.add("Warehouse")
+
+            context["industries_identified"] = list(industries)
+
+            print(f"Successfully extracted context for {len(properties)} properties")
+            print(f"States: {context['geographic_scope']}")
+            print(f"Industries: {context['industries_identified']}")
+            print(f"Total building value: ${context['total_building_value']:,.2f}")
+
+        except Exception as e:
+            print(f"Error in _extract_regulatory_context: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Return basic context even if extraction fails
+            context["error"] = f"Property extraction failed: {str(e)}"
 
         return context
 
@@ -567,6 +584,7 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
 
         # Extract from Property section
         if "Property" in submission_data and isinstance(submission_data["Property"], list):
+            print(f"Found {len(submission_data['Property'])} properties in Property section")
             for item in submission_data["Property"]:
                 if isinstance(item, dict):
                     property_data = {}
@@ -598,20 +616,51 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
 
                     properties.append(property_data)
 
+        # Extract from Advanced Property section if available
+        if "Advanced Property" in submission_data and isinstance(submission_data["Advanced Property"], list):
+            print(f"Found {len(submission_data['Advanced Property'])} advanced properties")
+            # Merge with existing properties or add new ones
+            for i, adv_item in enumerate(submission_data["Advanced Property"]):
+                if isinstance(adv_item, dict) and "advanced_facts" in adv_item:
+                    # If we have corresponding property, merge data
+                    if i < len(properties):
+                        # Merge advanced facts into existing property
+                        for key, value in adv_item["advanced_facts"].items():
+                            if isinstance(value, dict) and "value" in value:
+                                properties[i][key] = value["value"]
+                            else:
+                                properties[i][key] = value
+                    else:
+                        # Create new property from advanced facts
+                        advanced_property = {}
+                        for key, value in adv_item["advanced_facts"].items():
+                            if isinstance(value, dict) and "value" in value:
+                                advanced_property[key] = value["value"]
+                            else:
+                                advanced_property[key] = value
+                        properties.append(advanced_property)
+
         # Basic property normalization
         normalized_properties = []
-        for prop in properties:
+        for i, prop in enumerate(properties):
             normalized = {
+                "property_id": f"PROP_{i+1}",
                 "address": self._get_property_address(prop),
                 "building_value": self._get_numeric_value(prop, ["building_value", "value", "building_limit"]),
-                "square_footage": self._get_numeric_value(prop, ["square_footage", "sq_ft", "area"]),
-                "construction_type": self._get_string_value(prop, ["construction", "construction_type", "class"]),
-                "occupancy": self._get_string_value(prop, ["occupancy", "occupancy_type", "use"]),
+                "square_footage": self._get_numeric_value(prop, ["total_building_area_sqft", "square_footage", "sq_ft", "area"]),
+                "construction_type": self._get_string_value(prop, ["construction_type", "construction", "class"]),
+                "occupancy": self._get_string_value(prop, ["location_occupancy_description", "occupancy", "occupancy_type", "use"]),
                 "year_built": int(self._get_numeric_value(prop, ["year_built", "year"])) if self._get_numeric_value(prop, ["year_built", "year"]) > 0 else None,
-                "sprinklered": self._get_boolean_value(prop, ["sprinklered", "sprinkler", "fire_protection"]),
+                "sprinklered": self._get_boolean_value(prop, ["location_have_sprinklers", "sprinklered", "sprinkler", "fire_protection"]),
+                "state": self._get_string_value(prop, ["location_state", "state"]),
             }
+            
+            # Debug output
+            print(f"Property {i+1}: {normalized['address']}, Value: ${normalized['building_value']:,.2f}, State: {normalized['state']}")
+            
             normalized_properties.append(normalized)
 
+        print(f"Normalized {len(normalized_properties)} properties")
         return normalized_properties
 
     def _assess_federal_compliance(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -852,7 +901,7 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
             assessment["applies"] = True
 
             # Check for retrofit requirements
-            if year_built < 1980:
+            if year_built and year_built < 1980:
                 has_retrofit = location.get("seismic_retrofit", False)
                 if not has_retrofit:
                     assessment["compliant"] = False
@@ -1207,12 +1256,16 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
     def _extract_company_name(self, submission_data: Dict[str, Any]) -> str:
         """Extract company name from submission data."""
         # Try various possible locations for company name
-        if "company_name" in submission_data:
-            return submission_data["company_name"]
-        if "insured_name" in submission_data:
-            return submission_data["insured_name"]
-        if "applicant" in submission_data and isinstance(submission_data["applicant"], dict):
-            return submission_data["applicant"].get("name", "Unknown Company")
+        if "Common" in submission_data:
+            common = submission_data["Common"]
+            if "Firmographics" in common:
+                firmographics = common["Firmographics"]
+                if "company_name" in firmographics:
+                    company_name = firmographics["company_name"]
+                    if isinstance(company_name, dict) and "value" in company_name:
+                        return company_name["value"]
+                    return str(company_name)
+        
         return "Unknown Company"
 
     def _get_property_address(self, prop: Dict[str, Any]) -> str:
@@ -1220,17 +1273,25 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
         address_parts = []
         
         # Try direct address field
-        if "location_address" in prop:
-            return str(prop["location_address"])
+        address_fields = ["location_address", "address", "street_address"]
+        for field in address_fields:
+            if field in prop and prop[field]:
+                return str(prop[field])
         
         # Build from components
         if "street" in prop:
             address_parts.append(str(prop["street"]))
-        if "city" in prop:
+        if "location_city" in prop:
+            address_parts.append(str(prop["location_city"]))
+        elif "city" in prop:
             address_parts.append(str(prop["city"]))
-        if "state" in prop:
+        if "location_state" in prop:
+            address_parts.append(str(prop["location_state"]))
+        elif "state" in prop:
             address_parts.append(str(prop["state"]))
-        if "zip" in prop:
+        if "location_postal_code" in prop:
+            address_parts.append(str(prop["location_postal_code"]))
+        elif "zip" in prop:
             address_parts.append(str(prop["zip"]))
             
         return ", ".join(address_parts) if address_parts else "Address Unknown"
@@ -1238,7 +1299,7 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
     def _extract_state_from_property(self, prop: Dict[str, Any]) -> str:
         """Extract state from property data."""
         # Try various state field names
-        for field in ["state", "location_state", "state_code"]:
+        for field in ["location_state", "state", "state_code"]:
             if field in prop and prop[field]:
                 state = str(prop[field]).upper()
                 return state[:2] if len(state) >= 2 else state
@@ -1286,7 +1347,7 @@ class RegulatoryComplianceIntelligenceTool(BaseTool):
                 if isinstance(value, bool):
                     return value
                 if isinstance(value, str):
-                    return value.lower() in ["yes", "true", "y", "t", "1"]
+                    return value.upper() in ["YES", "TRUE", "Y", "T", "1"]
                 if isinstance(value, (int, float)):
                     return value > 0
         return False
