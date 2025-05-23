@@ -361,7 +361,10 @@ class PropertyValuationTool(BaseTool):
 
             # Query the collection for the transaction ID
             print(f"Searching for document with artifi_id: {transaction_id}")
-            document = collection.find_one({"artifi_id": transaction_id})
+            document = collection.find_one(
+               {"artifi_id": transaction_id},
+                sort=[("history_sequence_id", -1)]  # -1 for descending order (latest first)
+            )
 
             if document is None:
                 print(f"Document with artifi_id {transaction_id} not found")
